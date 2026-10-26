@@ -1,52 +1,47 @@
 # Roadmap
 
-Deliberately out of scope for the template, with pointers for adding them. None
-of these are required to run in production; they are the next layers a service
-usually grows into.
+Deliberately out of scope for the current FXStream scaffold.
 
-## Observability
+## Scaling and state
 
-- **Distributed tracing** (OpenTelemetry): spans across ASGI + SQLAlchemy, with
-  the trace id added to the log context. See
-  [observability.md](observability.md#tracing-roadmap).
-- **Error tracking** (Sentry et al.): initialise in the app lifespan and rely on
-  the existing exception handlers.
-- **Push metrics / exemplars** if you move beyond pull-based scraping.
+- **Redis pub/sub + quote store** for multi-worker/multi-replica deployment.
+- **Single-writer ingestion leader** if ingestion is split from the API.
+- **Cross-process WebSocket fan-out**.
+- **Shared rate limiting** at the edge or in Redis.
 
-## Security
+## Market data
 
-- **JWT / OAuth2** bearer auth with scopes and a user identity, replacing the
-  static API-key list. See [authentication.md](authentication.md#swapping-in-jwt--oauth).
-- **Shared rate limiting** (Redis/edge) for multi-worker deployments.
-- **Request body size limits** and upload scanning for endpoints that accept
-  large payloads.
-- **mTLS / service mesh** policy for internal traffic.
+- **Trade streams** for real volume and last-trade prices.
+- **More providers** (e.g. OANDA, Polygon, Coinbase) behind `RateProvider`.
+- **Candle retention/compaction** and time-range queries.
+- **Order-book depth** if quote sizing needs liquidity.
+- **Provider priority/failover** when two sources cover the same symbol.
+- **Backfill/replay** for candles after downtime.
 
-## Data
+## Quotes
 
-- **Read replicas** — note that the request-scoped transaction means reads see
-  the request's own writes; replicas need a separate read session.
-- **Cursor pagination** for large, ordered collections (offset pagination is
-  provided today).
-- **Optimistic concurrency** (`version` column / `ETag` / `If-Match`).
-- **Audit columns** (`created_by`, `updated_by`) and soft deletes.
-- **Idempotency keys** for `POST`.
+- **Quote persistence and audit** if regulators or clients require history.
+- **Per-client spreads** or tiered pricing.
+- **Execution/mock execution** and fill events.
+- **Idempotency keys** for quote creation.
 
 ## API
 
-- **Problem details** (RFC 9457) if you need a standard error body over the
-  current `{ "error": { ... } }` envelope.
-- **Sorting/filtering** on list endpoints.
-- **Response caching** (`ETag`/`Cache-Control`).
+- **Cursor pagination** for candle history.
+- **REST snapshot pagination/filtering** if the symbol set grows.
+- **Problem Details (RFC 9457)** instead of the current error envelope.
+- **OpenAPI contract tests** generated from a published schema.
 
-## Platform
+## Observability
 
-- **Kubernetes manifests / Helm chart** with resource limits, probes, and a
-  `PodDisruptionBudget`.
-- **CD pipeline** that builds/pushes a signed image and runs `alembic upgrade
-  head` as a release step.
-- **SBOM** generation and image scanning (Trivy/Grype) in CI.
+- **Distributed tracing** (OpenTelemetry) across ASGI, provider clients, and SQL.
+- **Error tracking** (Sentry et al.).
+- **Provider latency and message-rate dashboards**.
+- **Alerting** on provider `down`, stale feeds, and candle flush failures.
 
-If you implement any of these, add a page under `docs/` and link it from
-[the index](README.md), and update [`AGENTS.md`](../AGENTS.md) if it changes a
-convention.
+## Operations
+
+- **Kubernetes manifests / Helm chart** with probes and disruption budgets.
+- **CD pipeline** with migrations as a release step.
+- **SBOM/image scanning**.
+- **Runbooks** for provider outages and quote-store saturation.

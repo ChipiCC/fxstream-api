@@ -36,7 +36,7 @@ updates:
 - **Grouping** bundles every minor/patch update into a single Python PR, which
   keeps the noise down. **Major** updates are deliberately *not* grouped — they
   arrive one per PR so breaking changes get individual review.
-- Dependabot only runs against the **default branch** (`master`). The config is
+- Dependabot only runs against the **default branch** (`main`). The config is
   inert until it is merged there.
 
 ## Auto-merge workflow
@@ -78,7 +78,7 @@ That is exactly "auto-merge grouped patch updates", and it keeps minor releases
 Auto-merge is only as safe as your branch protection. Enable **both**:
 
 1. **Settings → General → Pull Requests → Allow auto-merge.**
-2. A **branch protection rule on `master`** that requires the CI status checks
+2. A **branch protection rule on `main`** that requires the CI status checks
    (the `quality` job from [`ci.yml`](../.github/workflows/ci.yml)).
 
 Auto-merge completes only once all *required* checks pass. If nothing is marked
@@ -104,7 +104,7 @@ declared above.
   `&& steps.metadata.outputs.dependency-type == 'direct:production'` to the step
   `if`.
 - **Restrict to safe packages:** add `contains(steps.metadata.outputs.dependency-names, 'pkg')`.
-- **Only this repo:** add `&& github.repository == 'owner/repo'` (the template
+- **Only this repo:** add `&& github.repository == 'owner/repo'` (FXStream
   omits it so forks behave identically).
 - **Never auto-merge anything:** delete the workflow and rely on manual review.
 
@@ -119,7 +119,7 @@ They are complementary:
 
 ## Verifying it works
 
-- Merge the config to `master`; Dependabot starts opening PRs.
+- Merge the config to `main`; Dependabot starts opening PRs.
 - **Insights → Dependency graph → Dependabot** lists what it tracks.
 - **Settings → Code security** shows alerts and security-update status.
 - The **Dependabot** tab has a "Check for updates" button to trigger a run.

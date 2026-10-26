@@ -29,18 +29,17 @@ Compose runs `alembic upgrade head` before starting Uvicorn:
 command: sh -c "alembic upgrade head && uvicorn app:app --host 0.0.0.0 --port 8000"
 ```
 
-### Scaling workers
+### Scaling
 
-The image starts a single Uvicorn process. For CPU-bound throughput, run
-multiple workers behind a process manager or increase replicas:
+**Run one worker per FXStream process group.** Rates, quotes, provider state,
+WebSocket subscriptions, the event bus, and the rate limiter are in memory.
+Multiple workers/replicas would serve inconsistent prices and split quote
+stores.
 
-```bash
-uvicorn app:app --host 0.0.0.0 --port 8000 --workers 4 --proxy-headers
-```
-
-> The in-process rate limiter and any in-memory cache are **per worker**. Use a
-> shared store or an edge limiter when running more than one worker/replica. See
-> [security.md](security.md#rate-limiting).
+To scale horizontally, add a shared pub/sub and quote store (Redis is the
+obvious candidate), then move the provider ingestion to a single writer or
+leader. Keep the candle aggregator single-writer as well. See
+[roadmap.md](roadmap.md).
 
 ## Migrations at deploy time
 
@@ -54,6 +53,7 @@ uvicorn app:app --host 0.0.0.0 --port 8000 --workers 4 --proxy-headers
 
 | Endpoint | Use | Behaviour |
 | --- | --- | --- |
+| `GET /health` | Aggregate | Same readiness check as `/health/ready`. |
 | `GET /health/live` | Liveness | `200` while the process is up; never touches dependencies. |
 | `GET /health/ready` | Readiness | `200` when the database is reachable, `503` otherwise. |
 
@@ -71,16 +71,32 @@ degraded instance instead of failing requests.
 
 ## Graceful shutdown
 
-The app lifespan disposes the database engine on shutdown. On `SIGTERM` Uvicorn
-stops accepting connections and drains in-flight requests before the process
-exits.
+On shutdown the lifespan:
+
+1. stops provider adapters and cancels their supervised tasks;
+2. stops the candle aggregator and flushes current candles;
+3. disposes the database engine.
+
+On `SIGTERM` Uvicorn stops accepting connections and drains in-flight requests
+before the process exits.
 
 ## Configuration in production
 
 Set at minimum: `ENVIRONMENT=production`, `DEBUG=false`, `DOCS_ENABLED=false`,
-`ALLOWED_HOSTS`, `API_KEYS`, and real database credentials. The app refuses to
-start otherwise — see
+`ALLOWED_HOSTS`, `API_KEYS`, real database credentials, and production provider
+symbols/staleness thresholds. The app refuses to start otherwise — see
 [configuration.md](configuration.md#production-validation).
+
+## Platform notes
+
+- Run the backend on a platform that supports long-lived WebSocket connections
+  (Render, Fly.io, or a container platform). Configure provider symbols,
+  staleness thresholds, spreads, and database credentials as environment
+  variables.
+- Run `alembic upgrade head` as a release step before starting the new version.
+- Deploy the frontend separately (for example on Vercel) and add its origin to
+  `CORS_ORIGINS`. Point the WebSocket client at `wss://<api-host>/v1/ws/rates`.
+- Keep one backend worker/replica until shared state (Redis) is added.
 
 ## CI
 

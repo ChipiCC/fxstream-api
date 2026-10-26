@@ -1,6 +1,6 @@
 # Observability
 
-The template provides structured logging, request IDs, access logs, and
+FXStream provides structured logging, request IDs, access logs, and
 Prometheus metrics. Distributed tracing is **not** wired up yet — see
 [roadmap.md](roadmap.md).
 
@@ -20,7 +20,12 @@ Emit logs with `get_logger(__name__)` and pass structured fields:
 
 ```python
 logger = get_logger(__name__)
-logger.info("order_created", order_id=str(order.id), total=order.total)
+logger.info(
+    "tick_received",
+    source="binance",
+    symbol=tick.symbol,
+    latency_ms=latency_ms,
+)
 ```
 
 `print` is banned by Ruff (`T20`).
@@ -66,6 +71,7 @@ Until then, `request_id` plus access logs give most of the correlation value.
 
 ## Health endpoints
 
+- `GET /health` — aggregate health; same database readiness check.
 - `GET /health/live` — liveness; process is up, no dependencies touched.
 - `GET /health/ready` — readiness; checks the database and returns **503** when
   it is unreachable. See [operations.md](operations.md).

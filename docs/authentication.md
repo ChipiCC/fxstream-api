@@ -1,6 +1,6 @@
 # Authentication
 
-The template ships **opt-in API-key authentication**. It is disabled by default
+FXStream ships **opt-in API-key authentication**. It is disabled by default
 so local development stays frictionless, and enforced as soon as you configure
 at least one key.
 
@@ -34,7 +34,7 @@ API_KEYS=key-one,key-two
 ```
 
 ```bash
-curl -H "X-API-Key: local-dev-key" http://localhost:8000/api/v1/items
+curl -H "X-API-Key: local-dev-key" http://localhost:8000/v1/quotes/QUOTE_ID
 ```
 
 Without the header (or with a wrong key) protected routes return `401`:
@@ -48,12 +48,19 @@ The `X-API-Key` scheme shows up in the OpenAPI schema, so `/docs` gets an
 
 ## Protecting routes
 
-The public `items` router applies the guard to every route:
+The quote router applies the guard to every route:
 
 ```python
-# src/items/router.py
-router = APIRouter(prefix="/items", tags=["items"], dependencies=[Depends(require_api_key)])
+# src/quotes/router.py
+router = APIRouter(
+    prefix="/quotes",
+    tags=["quotes"],
+    dependencies=[Depends(require_api_key)],
+)
 ```
+
+Rates, candles, provider status, and the WebSocket stream stay public. When
+`API_KEYS` is empty the dependency is a no-op.
 
 Do the same for a new domain router. Apply it per-route when only some
 endpoints are protected:

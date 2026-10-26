@@ -45,7 +45,7 @@ RATE_LIMIT_WINDOW_SECONDS=60
 
 - Keys on the client IP (`scope["client"]`).
 - Returns `429` with a `Retry-After` header and the standard error envelope.
-- `/health/live`, `/health/ready`, and `METRICS_PATH` are exempt.
+- `/health`, `/health/live`, `/health/ready`, and `METRICS_PATH` are exempt.
 
 > **Multi-worker caveat:** the counter lives in memory, so each worker/replica
 > has its own budget. For a global limit, front the service with an edge proxy
@@ -73,12 +73,13 @@ Errors use a single envelope (see
 [`src/core/exceptions.py`](../src/core/exceptions.py)):
 
 ```json
-{ "error": { "code": "not_found", "message": "Item ... not found" } }
+{ "error": { "code": "not_found", "message": "Quote ... not found" } }
 ```
 
 Available error types: `BadRequestError` (400), `UnauthorizedError` (401),
 `ForbiddenError` (403), `NotFoundError` (404), `ConflictError` (409),
-`TooManyRequestsError` (429), `ServiceUnavailableError` (503), plus the base
+`StaleRateError` (409), `UnknownSymbolError` (422), `TooManyRequestsError` (429),
+`RateUnavailableError` (503), `ServiceUnavailableError` (503), plus the base
 `AppError` (400). Validation failures return `422` with a `validation_error`
 code and the field errors.
 

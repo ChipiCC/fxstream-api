@@ -6,8 +6,11 @@ and, outside production, from a `.env.local` file, then validated at startup.
 
 - Read settings through `get_settings()` (cached) — never call `os.environ`.
 - List settings (`ALLOWED_HOSTS`, `CORS_ORIGINS`, `API_KEYS`,
-  `CORS_ALLOW_METHODS`, `CORS_ALLOW_HEADERS`) accept either a comma-separated
-  string (`a,b,c`) or a JSON array (`["a","b"]`).
+  `CORS_ALLOW_METHODS`, `CORS_ALLOW_HEADERS`, `BINANCE_SYMBOLS`,
+  `FRANKFURTER_SYMBOLS`) accept either a comma-separated string (`a,b,c`) or a
+  JSON array (`["a","b"]`).
+- Dictionary settings (`PROVIDER_STALE_SECONDS`, `SPREADS_BPS`,
+  `PRICE_DECIMALS_BY_SYMBOL`) accept a JSON object.
 - `.env.local` is gitignored; only [`.env.local.example`](../.env.local.example)
   ships. Copy it to `.env.local` to configure a local run.
 
@@ -33,10 +36,10 @@ file). In production `.env.local` is not read at all.
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `APP_NAME` | `FastAPI Service` | Service name (also the DB `application_name`). |
+| `APP_NAME` | `FXStream API` | Service name (also the DB `application_name`). |
 | `ENVIRONMENT` | `local` | `local`, `staging`, or `production`. |
 | `DEBUG` | `false` | Debug mode; also enables SQL echo. |
-| `API_V1_PREFIX` | `/api/v1` | Prefix for public domain routers. |
+| `API_V1_PREFIX` | `/v1` | Prefix for public domain routers. |
 | `DOCS_ENABLED` | `true` | Serve `/docs`, `/redoc`, `/openapi.json`. |
 
 ### HTTP server
@@ -55,6 +58,45 @@ file). In production `.env.local` is not read at all.
 | `METRICS_PATH` | `/metrics` | Path for the scrape endpoint. |
 
 See [metrics.md](metrics.md) and [observability.md](observability.md).
+
+### Market data
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `MARKET_DATA_ENABLED` | `true` | Start provider tasks and candle ingestion. Set `false` for offline development/tests. |
+| `BINANCE_SYMBOLS` | `BTC/USDT` | Comma-separated or JSON list of crypto pairs. |
+| `FRANKFURTER_SYMBOLS` | `EUR/USD` | Comma-separated or JSON list of FX pairs. |
+| `BINANCE_WS_URL` | `wss://stream.binance.com:9443/stream` | Binance combined-stream endpoint. |
+| `FRANKFURTER_BASE_URL` | `https://api.frankfurter.dev/v1` | Frankfurter REST base URL. |
+| `FRANKFURTER_POLL_SECONDS` | `3600` | Poll interval for daily FX rates. |
+| `PROVIDER_REQUEST_TIMEOUT_SECONDS` | `10` | HTTP timeout for Frankfurter. |
+| `PROVIDER_STALE_SECONDS` | `{"binance":10,"frankfurter":129600}` | JSON object of per-provider staleness thresholds. |
+| `PROVIDER_FAILURE_THRESHOLD` | `3` | Consecutive failures before a provider is `down`. |
+| `PROVIDER_BACKOFF_INITIAL_SECONDS` | `1` | Initial reconnect delay. |
+| `PROVIDER_BACKOFF_MAX_SECONDS` | `60` | Maximum reconnect delay. |
+
+A symbol may belong to only one provider; overlapping lists fail startup
+validation. See [providers.md](providers.md).
+
+### Quotes
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `DEFAULT_SPREAD_BPS` | `10` | Total spread applied when no symbol override exists. |
+| `SPREADS_BPS` | `{}` | JSON object of per-symbol spreads, e.g. `{"BTC/USDT":15}`. |
+| `QUOTE_TTL_SECONDS` | `30` | Quote lifetime. |
+| `QUOTE_RETENTION_SECONDS` | `300` | Keep expired quotes so `GET` can return `valid: false`. |
+| `PRICE_DECIMALS` | `8` | Default quote precision. |
+| `PRICE_DECIMALS_BY_SYMBOL` | `{}` | JSON object of per-symbol precision overrides. |
+
+See [market-data.md](market-data.md#quotes).
+
+### Candles
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `CANDLES_ENABLED` | `true` | Enable 1-minute aggregation and flushing. |
+| `CANDLE_FLUSH_SECONDS` | `60` | Interval for writing closed candles. |
 
 ### Security
 

@@ -1,69 +1,70 @@
-# FastAPI Service Template
+# FXStream API
 
-A production-ready template for building FastAPI microservices.
+Real-time FX and crypto rates, 1-minute candles, and short-lived quotes.
 
 - **Runtime:** Python 3.15, FastAPI, Uvicorn
-- **Data:** native SQL over async SQLAlchemy Core + asyncpg, Alembic raw-SQL migrations, PostgreSQL with native `uuid` keys (no ORM)
-- **Architecture:** layered `domain → service → repository → db`, with a generic `BaseRepository` CRUD contract and a request-scoped unit of work
-- **Config:** `pydantic-settings` (12-factor, `.env` support, production guards)
-- **Security:** opt-in API-key auth, CORS, security headers, trusted hosts, in-process rate limiting
-- **Observability:** structured JSON logging, request IDs + access logs, Prometheus metrics
-- **Quality:** Ruff (lint + format), mypy (strict), pytest + coverage gate
-- **Ops:** Dockerfile (multi-stage, non-root), Docker Compose, GitHub Actions CI, Dependabot
-- **Tooling:** [uv](https://docs.astral.sh/uv/) for deps, [mise](https://mise.jdx.dev/) for tool versions & tasks
+- **Ingestion:** Binance `bookTicker` WebSocket + Frankfurter REST polling
+- **Market data:** in-memory rate cache with per-provider staleness, coalescing
+  WebSocket fan-out, and Decimal prices end to end
+- **Quotes:** immutable, configurable spread per symbol, 30-second TTL
+- **Persistence:** native SQL over async SQLAlchemy Core + asyncpg, Alembic
+  raw-SQL migrations, PostgreSQL for candles (no ORM)
+- **Observability:** structured JSON logs, request IDs, Prometheus metrics for
+  HTTP, providers, WebSocket, and quotes
+- **Quality:** Ruff, mypy strict, pytest + coverage gate, real Postgres tests
+- **Ops:** Dockerfile (multi-stage, non-root), Docker Compose, GitHub Actions CI
+
+Read the [high-level design](docs/high-level-design.md) for product scope and the
+full component model.
 
 ## Documentation
 
-Full documentation lives in [`docs/`](docs/README.md), split by topic:
+Full documentation lives in [`docs/`](docs/README.md):
 
 | Topic | Description |
 | --- | --- |
-| [Architecture](docs/architecture.md) | Layering, request path, and the no-ORM policy |
-| [Configuration](docs/configuration.md) | Every setting, secrets, and production validation |
-| [Authentication](docs/authentication.md) | Opt-in API-key auth and swapping in JWT/OAuth |
+| [High-Level Design](docs/high-level-design.md) | Scope, components, data model, API contract |
+| [Architecture](docs/architecture.md) | Runtime flow, packages, and invariants |
+| [Configuration](docs/configuration.md) | Every setting and production validation |
+| [Market Data](docs/market-data.md) | Rates, quotes, candles, and staleness |
+| [Providers](docs/providers.md) | Binance, Frankfurter, resilience, adding a provider |
+| [WebSocket](docs/websocket.md) | Subscription protocol and backpressure |
+| [Authentication](docs/authentication.md) | Optional API-key auth |
 | [CORS](docs/cors.md) | Browser cross-origin setup |
-| [Security](docs/security.md) | Headers, trusted hosts, rate limiting, checklist |
-| [Metrics](docs/metrics.md) | Prometheus instrumentation and `/metrics` |
-| [Observability](docs/observability.md) | Logging, request IDs, access logs, tracing (roadmap) |
-| [Database](docs/database.md) | Native SQL, the unit-of-work, pooling, migrations |
-| [Testing](docs/testing.md) | Fixtures, contract tests, coverage |
-| [Operations](docs/operations.md) | Docker, migrations, health probes, shutdown |
-| [Dependencies](docs/dependencies.md) | Dependabot updates and patch auto-merge |
+| [Security](docs/security.md) | Headers, trusted hosts, rate limiting |
+| [Metrics](docs/metrics.md) | Prometheus instruments |
+| [Observability](docs/observability.md) | Logging, request IDs, tracing roadmap |
+| [Database](docs/database.md) | Native SQL, transactions, candle schema |
+| [Testing](docs/testing.md) | Fixtures, fakes, coverage |
+| [Operations](docs/operations.md) | Docker, migrations, health, shutdown |
 | [Roadmap](docs/roadmap.md) | Deliberately out-of-scope items |
 
-## Project layout
+## Architecture
 
 ```
-.
-├── src/
-│   ├── app.py               # app factory + ASGI entrypoint (middleware, routers)
-│   ├── core/                # config, logging, errors, middleware, security,
-│   │                        # pagination, metrics, BaseRepository
-│   ├── db/                  # async engine + session (unit of work)
-│   ├── internal/            # internal domain: metadata + health probes
-│   │   ├── router.py
-│   │   ├── handlers/
-│   │   └── models/
-│   └── items/               # example domain
-│       ├── router.py        # wires paths to handlers
-│       ├── handlers/        # one module per endpoint
-│       ├── service.py       # business logic (thin layer over the repository)
-│       ├── repository.py    # ItemRepository: native SQL
-│       ├── models/          # Pydantic request/response models
-│       └── dependencies.py
-├── migrations/              # Alembic environment + raw-SQL versions
-├── tests/                   # pytest suite (mirrors the domain layout)
-├── docs/                    # documentation (see above)
-├── Dockerfile / compose.yaml
-└── pyproject.toml           # deps + tool config
+Providers → Normalizer → Rate Store → Event Bus → WebSocket Gateway
+                                │           │
+                                │           └→ Candle Aggregator → PostgreSQL
+                                └→ Quote Engine → in-memory Quote Store
 ```
 
-**Layering rule:** `domain → service → repository → db`. Each domain lives in
-its own `src/<domain>/` package: the router/handlers stay thin, the service
-holds business logic and delegates persistence to a repository, and the
-repository owns the hand-written SQL. The session dependency owns the
-transaction. Rows are mapped straight into Pydantic models. There is **no ORM** —
-see [`docs/database.md`](docs/database.md) and [`AGENTS.md`](AGENTS.md).
+```text
+src/
+├── app.py                 # app factory, lifespan, router wiring
+├── core/                  # config, logging, errors, middleware, metrics, clock
+├── db/                    # async engine + request/background sessions
+├── market/                # Tick/Rate models, RateStore, EventBus, runtime
+├── providers/             # Binance, Frankfurter, normalizers, status API
+├── rates/                 # REST rate snapshots
+├── quotes/                # quote engine, in-memory store, REST API
+├── candles/               # OHLC aggregation, PostgreSQL repository
+├── streaming/             # WebSocket gateway and backpressure
+└── internal/              # metadata and health probes
+```
+
+**Invariants:** Decimal only, UTC only, immutable quotes, stale rates rejected,
+non-blocking event bus, provider failures isolated, native parameterized SQL.
+See [`AGENTS.md`](AGENTS.md) for the full rule set.
 
 ## Getting started
 
@@ -76,66 +77,72 @@ mise run migrate    # apply migrations
 mise run dev        # http://localhost:8000/docs
 ```
 
-Run the whole stack (API + Postgres) with Docker:
+The service starts ingesting by default. Set `MARKET_DATA_ENABLED=false` to run
+without live providers (for example while working offline).
+
+Run the whole stack with Docker:
 
 ```bash
 mise run docker:up
 ```
 
-## Common tasks
+## Endpoints
 
-| Task | Command |
-| --- | --- |
-| Install/refresh deps | `mise run sync` |
-| Dev server | `mise run dev` |
-| Lint | `mise run lint` |
-| Format | `mise run format` |
-| Autofix | `mise run fix` |
-| Type check | `mise run typecheck` |
-| Tests | `mise run test` |
-| Everything | `mise run check` |
-| Start/stop Postgres | `mise run db:up` / `db:down` |
-| New migration | `mise run revision "add foo"` |
-| Apply migrations | `mise run migrate` |
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET` | `/` | Service metadata |
+| `GET` | `/health` | Aggregate health (database readiness) |
+| `GET` | `/health/live` | Liveness probe |
+| `GET` | `/health/ready` | Readiness probe |
+| `GET` | `/metrics` | Prometheus metrics (when enabled) |
+| `GET` | `/v1/rates?symbols=EUR/USD,BTC/USDT` | Latest rate snapshot |
+| `GET` | `/v1/rates/{base}/{quote}/candles?interval=1m&limit=100` | Historical candles |
+| `POST` | `/v1/quotes` | Create an expiring quote |
+| `GET` | `/v1/quotes/{quote_id}` | Fetch a quote and its validity |
+| `GET` | `/v1/providers/status` | Provider state |
+| `WS` | `/v1/ws/rates` | Subscribe to rate ticks |
+| `GET` | `/docs`, `/redoc`, `/openapi.json` | API docs |
 
-Without mise, the equivalents are `uv run <tool>` (e.g. `uv run pytest`).
+Quote routes accept the `X-API-Key` header when `API_KEYS` is configured. Rates
+and WebSocket market data are public.
+
+## Configuration
+
+All settings live in [`src/core/config.py`](src/core/config.py) and are read from
+environment variables (plus `.env.local` outside production). See
+[`.env.local.example`](.env.local.example) and
+[`docs/configuration.md`](docs/configuration.md).
+
+Key defaults:
+
+```bash
+BINANCE_SYMBOLS=BTC/USDT
+FRANKFURTER_SYMBOLS=EUR/USD
+PROVIDER_STALE_SECONDS={"binance":10,"frankfurter":129600}
+DEFAULT_SPREAD_BPS=10
+QUOTE_TTL_SECONDS=30
+```
 
 ## Testing
 
-Tests run against a **real PostgreSQL database** (no SQLite). Start one first
-with `mise run db:up`, then:
+Tests run against a **real PostgreSQL database** (no SQLite). Start one with
+`mise run db:up`, then:
 
 ```bash
 mise run test
 ```
 
-The connection is taken from `TEST_DATABASE_URL` (default
-`postgresql+asyncpg://postgres:postgres@localhost:5432/app_test`). The schema is
-built by applying the Alembic migrations, so the suite also validates them.
-Coverage is enforced at 90%. See [`docs/testing.md`](docs/testing.md).
+The connection comes from `TEST_DATABASE_URL` (default
+`postgresql+asyncpg://postgres:postgres@localhost:5432/app_test`). Tests disable
+live ingestion, inject fake providers/clocks, and never call Binance or
+Frankfurter. Coverage is enforced at 90%. See
+[`docs/testing.md`](docs/testing.md).
 
-## Endpoints
+## Single-process note
 
-| Method | Path | Description |
-| --- | --- | --- |
-| GET | `/` | Service metadata |
-| GET | `/health/live` | Liveness probe |
-| GET | `/health/ready` | Readiness probe (checks DB, `503` when down) |
-| GET | `/metrics` | Prometheus metrics (when enabled) |
-| GET/POST | `/api/v1/items` | List / create items |
-| GET/PATCH/DELETE | `/api/v1/items/{id}` | Read / update / delete an item |
-| GET | `/docs`, `/redoc`, `/openapi.json` | API docs |
-
-Protected routes accept the `X-API-Key` header when `API_KEYS` is configured —
-see [`docs/authentication.md`](docs/authentication.md).
-
-## Configuration
-
-All settings live in `src/core/config.py` and are read from environment
-variables (plus `.env.local` outside production). See
-[`.env.local.example`](.env.local.example) for the full list and
-[`docs/configuration.md`](docs/configuration.md) for reference. The app refuses
-to start with insecure defaults when `ENVIRONMENT=production`.
+Rates, quotes, provider state, and WebSocket subscriptions live in memory. Run
+one worker per process group, or add a shared store (Redis/pub-sub) before
+scaling horizontally. See [`docs/operations.md`](docs/operations.md#scaling).
 
 ## License
 
