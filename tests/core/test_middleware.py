@@ -33,7 +33,7 @@ async def _ok(_request: Request) -> PlainTextResponse:
 
 
 def _rate_limited_app(max_requests: int) -> Starlette:
-    app = Starlette(routes=[Route("/x", _ok), Route("/health/live", _ok)])
+    app = Starlette(routes=[Route("/x", _ok), Route("/health", _ok), Route("/health/live", _ok)])
     app.add_middleware(RateLimitMiddleware, max_requests=max_requests, window_seconds=60)
     return app
 
@@ -61,4 +61,5 @@ async def test_rate_limit_exempts_health() -> None:
     transport = ASGITransport(app=_rate_limited_app(max_requests=1))
     async with AsyncClient(transport=transport, base_url="http://t") as client:
         for _ in range(3):
+            assert (await client.get("/health")).status_code == 200
             assert (await client.get("/health/live")).status_code == 200

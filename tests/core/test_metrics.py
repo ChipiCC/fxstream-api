@@ -17,8 +17,8 @@ async def test_metrics_endpoint_exposes_prometheus(client: AsyncClient) -> None:
 
 
 async def test_metrics_records_route_template(client: AsyncClient) -> None:
-    await client.get("/api/v1/items")
+    await client.get("/v1/rates")
 
     body = (await client.get("/metrics")).text
     # path parameters must be collapsed to the route template, not the raw path
-    assert 'route="/api/v1/items"' in body
+    assert 'route="/v1/rates"' in body
