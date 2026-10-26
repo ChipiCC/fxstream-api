@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, ClassVar
 
 from fastapi import FastAPI, Request, status
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -63,6 +64,21 @@ class ServiceUnavailableError(AppError):
     code = "service_unavailable"
 
 
+class StaleRateError(AppError):
+    status_code = status.HTTP_409_CONFLICT
+    code = "stale_rate"
+
+
+class RateUnavailableError(AppError):
+    status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    code = "rate_unavailable"
+
+
+class UnknownSymbolError(AppError):
+    status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
+    code = "unknown_symbol"
+
+
 def _error_body(code: str, message: str, details: dict[str, Any] | None = None) -> dict[str, Any]:
     body: dict[str, Any] = {"error": {"code": code, "message": message}}
     if details:
@@ -99,6 +115,6 @@ def register_exception_handlers(app: FastAPI) -> None:
             content=_error_body(
                 "validation_error",
                 "Request validation failed",
-                {"errors": exc.errors()},
+                {"errors": jsonable_encoder(exc.errors())},
             ),
         )

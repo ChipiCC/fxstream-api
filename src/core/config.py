@@ -25,6 +25,8 @@ from pydantic_settings import (
     SettingsConfigDict,
 )
 
+from core.symbols import normalize_symbol
+
 DOTENV_FILE = ".env.local"
 """Local settings file: read outside production, ignored when it does not exist."""
 
@@ -83,10 +85,10 @@ class Settings(BaseSettings):
         return tuple(sources)
 
     # --- Application ---
-    app_name: str = "FastAPI Service"
+    app_name: str = "FXStream API"
     environment: Environment = "local"
     debug: bool = False
-    api_v1_prefix: str = "/api/v1"
+    api_v1_prefix: str = "/v1"
     docs_enabled: bool = True
 
     # --- HTTP server ---
@@ -112,6 +114,33 @@ class Settings(BaseSettings):
     rate_limit_requests: int = Field(default=100, ge=1)
     rate_limit_window_seconds: int = Field(default=60, ge=1)
 
+    # --- Market data ---
+    market_data_enabled: bool = True
+    binance_symbols: CsvList = Field(default_factory=lambda: ["BTC/USDT"])
+    frankfurter_symbols: CsvList = Field(default_factory=lambda: ["EUR/USD"])
+    binance_ws_url: str = "wss://stream.binance.com:9443/stream"
+    frankfurter_base_url: str = "https://api.frankfurter.dev/v1"
+    frankfurter_poll_seconds: int = Field(default=3600, ge=1)
+    provider_request_timeout_seconds: float = Field(default=10.0, gt=0)
+    provider_stale_seconds: dict[str, int] = Field(
+        default_factory=lambda: {"binance": 10, "frankfurter": 129600}
+    )
+    provider_failure_threshold: int = Field(default=3, ge=1)
+    provider_backoff_initial_seconds: float = Field(default=1.0, gt=0)
+    provider_backoff_max_seconds: float = Field(default=60.0, gt=0)
+
+    # --- Quotes ---
+    default_spread_bps: int = Field(default=10, ge=0)
+    spreads_bps: dict[str, int] = Field(default_factory=dict)
+    quote_ttl_seconds: int = Field(default=30, ge=1)
+    quote_retention_seconds: int = Field(default=300, ge=0)
+    price_decimals: int = Field(default=8, ge=0, le=18)
+    price_decimals_by_symbol: dict[str, int] = Field(default_factory=dict)
+
+    # --- Candles ---
+    candles_enabled: bool = True
+    candle_flush_seconds: int = Field(default=60, ge=1)
+
     # --- Database ---
     # A full DSN wins over the individual POSTGRES_* fields. It must use the
     # asyncpg driver (`postgresql+asyncpg://`); a bare `postgresql://` is upgraded.
@@ -132,7 +161,14 @@ class Settings(BaseSettings):
     db_pool_timeout_seconds: int = Field(default=30, ge=1)
     db_statement_timeout_ms: int = Field(default=0, ge=0)
 
-    @field_validator("allowed_hosts", "cors_origins", "api_keys", mode="before")
+    @field_validator(
+        "allowed_hosts",
+        "cors_origins",
+        "api_keys",
+        "binance_symbols",
+        "frankfurter_symbols",
+        mode="before",
+    )
     @classmethod
     def _split_list(cls, value: Any) -> Any:
         if not isinstance(value, str):
@@ -141,6 +177,37 @@ class Settings(BaseSettings):
         if text.startswith("["):
             return json.loads(text)
         return [item.strip() for item in text.split(",") if item.strip()]
+
+    @field_validator("binance_symbols", "frankfurter_symbols")
+    @classmethod
+    def _normalize_symbols(cls, value: list[str]) -> list[str]:
+        return [normalize_symbol(symbol) for symbol in value]
+
+    @field_validator("spreads_bps", "price_decimals_by_symbol")
+    @classmethod
+    def _normalize_symbol_keys(cls, value: dict[str, int]) -> dict[str, int]:
+        return {normalize_symbol(symbol): item for symbol, item in value.items()}
+
+    @field_validator("spreads_bps")
+    @classmethod
+    def _validate_spreads(cls, value: dict[str, int]) -> dict[str, int]:
+        if any(spread < 0 or spread > 10000 for spread in value.values()):
+            raise ValueError("spreads must be between 0 and 10000 bps")
+        return value
+
+    @field_validator("price_decimals_by_symbol")
+    @classmethod
+    def _validate_decimals(cls, value: dict[str, int]) -> dict[str, int]:
+        if any(decimals < 0 or decimals > 18 for decimals in value.values()):
+            raise ValueError("price decimals must be between 0 and 18")
+        return value
+
+    @field_validator("provider_stale_seconds")
+    @classmethod
+    def _validate_stale_thresholds(cls, value: dict[str, int]) -> dict[str, int]:
+        if any(threshold <= 0 for threshold in value.values()):
+            raise ValueError("stale thresholds must be positive")
+        return value
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -166,6 +233,39 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.environment == "production"
+
+    @property
+    def symbols(self) -> list[str]:
+        """All configured symbols, preserving order without duplicates."""
+        return list(dict.fromkeys([*self.binance_symbols, *self.frankfurter_symbols]))
+
+    def symbols_for_provider(self, provider: str) -> list[str]:
+        if provider == "binance":
+            return list(self.binance_symbols)
+        if provider == "frankfurter":
+            return list(self.frankfurter_symbols)
+        return []
+
+    def stale_seconds_for(self, provider: str) -> int:
+        return self.provider_stale_seconds.get(provider, 60)
+
+    def spread_bps_for(self, symbol: str) -> int:
+        return self.spreads_bps.get(normalize_symbol(symbol), self.default_spread_bps)
+
+    def price_decimals_for(self, symbol: str) -> int:
+        return self.price_decimals_by_symbol.get(normalize_symbol(symbol), self.price_decimals)
+
+    @model_validator(mode="after")
+    def _validate_market(self) -> Settings:
+        overlap = set(self.binance_symbols) & set(self.frankfurter_symbols)
+        if overlap:
+            joined = ", ".join(sorted(overlap))
+            raise ValueError(f"symbols cannot be served by two providers: {joined}")
+        # An env override should not accidentally drop the other provider's
+        # threshold and mark that provider permanently stale.
+        self.provider_stale_seconds.setdefault("binance", 10)
+        self.provider_stale_seconds.setdefault("frankfurter", 129600)
+        return self
 
     @model_validator(mode="after")
     def _guard_production(self) -> Settings:
