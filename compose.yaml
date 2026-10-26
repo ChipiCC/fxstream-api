@@ -13,6 +13,9 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: app
+      MARKET_DATA_ENABLED: "true"
+      BINANCE_SYMBOLS: BTC/USDT
+      FRANKFURTER_SYMBOLS: EUR/USD
     depends_on:
       db:
         condition: service_healthy

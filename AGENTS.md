@@ -5,19 +5,33 @@ Keep this file up to date when conventions, commands, or structure change.
 
 ## Project overview
 
-A **production-ready FastAPI microservice template**. It ships an example
-`items` domain to demonstrate the full request path (router → handler →
-service → native SQL → Postgres). Generic names (`Item`) are intentional so they
-can be renamed for a real domain.
+**FXStream API** ingests FX and crypto prices from external providers, normalizes
+them, and serves them over REST and WebSocket. It also issues short-lived quotes
+with a spread and a 30-second TTL.
 
-Tech stack: Python 3.15, FastAPI, **native SQL over async SQLAlchemy Core +
-asyncpg**, Alembic (raw-SQL migrations), Pydantic v2 / pydantic-settings,
-structlog, Ruff, mypy, pytest, uv, mise.
+The service is a **modular monolith**. It runs as a single process and keeps the
+latest rate, quote, and provider state in memory. Candles are the only durable
+domain and are stored in PostgreSQL.
 
-> **No ORM.** SQLAlchemy is used only as the async connection pool and
-> transaction manager. All queries are hand-written, parameterized SQL. See
-> [Native SQL](#native-sql) below — it is the single most important convention
-> in this repo.
+Read [`docs/high-level-design.md`](docs/high-level-design.md) before changing
+the product behaviour.
+
+## Scope
+
+In scope:
+
+- Binance WebSocket ingestion and Frankfurter REST polling.
+- Latest rate cache with a per-provider staleness flag.
+- Subscription-based WebSocket price stream.
+- REST rate snapshots, historical 1-minute candles, quotes, and provider status.
+- Quote generation with bid, ask, spread, and expiry.
+
+Out of scope for now:
+
+- Trade execution or fund movement.
+- Full user authentication.
+- Equities or exchange-traded stock data.
+- Redis or another external event bus.
 
 ## Setup
 
@@ -50,232 +64,206 @@ or `uv run …` so the correct versions are used.
 **Definition of done:** `mise run check` passes (lint + mypy + tests), and a
 raw-SQL migration exists for any schema change.
 
-## Architecture & layering
+## Architecture
 
 ```
-domain (router → handlers)  →  service  →  repository  →  db (engine, session)
-                    ↘ models (Pydantic) ↗
+Providers → Normalizer → Rate Store → Event Bus → WebSocket Gateway
+                                │           │
+                                │           └→ Candle Aggregator → PostgreSQL
+                                └→ Quote Engine → in-memory Quote Store
 ```
 
-The source root is `src/` and it is a **flat namespace** — there is no `app/`
-package. Imports are absolute from the top level (`core.config`, `db.session`,
-`items.service`, `app`).
-
-- `src/app.py` — the application factory (`create_app`) and ASGI entrypoint
-  (`app`). Wires middleware, exception handlers, and the domain routers.
-- `src/core/` — cross-cutting: `config.py` (settings), `logging.py`,
-  `exceptions.py` (+ handlers), `middleware.py` (request context/access log,
-  security headers, rate limiting), `security.py` (API-key auth), `metrics.py`
-  (Prometheus), `pagination.py` (`Page[T]`, `PaginationDep`), `repository.py`
-  (`BaseRepository`), `version.py`.
-- `src/db/` — concrete persistence infrastructure: async `engine`,
-  `SessionFactory`, `get_session` + `SessionDep`. The `BaseRepository` contract
-  lives in `core` because it is backend-agnostic (an in-memory fake implements
-  it with no database).
-- `src/<domain>/` — one self-contained package per domain (`items/`,
-  `internal/`).
-
-A domain is a package with a fixed shape:
-
 ```
-src/items/
-├── router.py         # APIRouter: wires paths to handlers (no logic)
-├── handlers/         # one module per endpoint (create.py, list.py, ...)
-├── service.py        # business logic; delegates persistence to the repository
-├── repository.py     # data access: native SQL, owns transactions
-├── models/           # Pydantic request/response models
-└── dependencies.py   # domain DI aliases (e.g. ItemServiceDep)
+src/
+├── app.py                 # app factory, lifespan, router wiring
+├── core/                  # config, logging, errors, middleware, metrics, clock
+├── db/                    # async engine + request/background sessions
+├── market/                # Tick/Rate models, RateStore, EventBus, runtime container
+├── providers/             # RateProvider adapters, normalizers, registry, status API
+├── rates/                 # REST rate snapshot + candles endpoints
+├── quotes/                # Quote engine, in-memory store, REST API
+├── candles/               # OHLC aggregation, PostgreSQL repository
+├── streaming/             # WebSocket gateway and subscription backpressure
+└── internal/              # metadata and health probes
 ```
 
-- `router.py` + `handlers/` are the HTTP layer only. Parse/validate input, call
-  a service, return a model. **No business logic, no SQL.**
-- `service.py` — business logic only. It delegates persistence to a repository
-  and must not touch the session or write SQL.
-- `repository.py` — the data-access layer. Subclasses `BaseRepository` (from
-  `core/repository.py`), holds all the hand-written SQL, and owns transaction
-  boundaries (`commit`).
-- `models/` — Pydantic request/response models. Queries return rows that are
-  validated straight into `*Read` models.
-- `internal/` is the non-domain domain: service metadata and health probes,
-  mounted at the root (`/`, `/health/*`) outside the versioned API prefix.
+The source root is `src/`, a flat namespace — imports are absolute from the top
+level (`core.config`, `market.rate_store`, `app`). There is no `app/` package.
 
-There is **no ORM models package** — the schema lives in Alembic migrations and
-the queries live in repositories.
+### Data flow
 
-### Adding a new domain
+1. A provider adapter receives a payload and normalizes it into a `Tick`.
+2. `RateStore` stores the latest tick per symbol and computes staleness.
+3. `EventBus` offers the tick to every matching subscription.
+4. The WebSocket gateway sends the latest tick per symbol to each client.
+5. The candle aggregator builds 1-minute candles and flushes them to Postgres.
+6. `QuoteEngine` reads the latest non-stale rate, applies the spread, and stores
+   an immutable quote with an expiry.
 
-1. `mise run revision "add <name>"` — write the `CREATE TABLE` / `CREATE INDEX`
-   as raw SQL in `upgrade()` (and the inverse in `downgrade()`).
-2. `src/<domain>/models/<name>.py` — `XCreate`, `XUpdate`, `XRead` (mirror the
-   columns); re-export from `models/__init__.py`.
-3. `src/<domain>/repository.py` — a `<Name>Repository(BaseRepository[...])`
-   taking `AsyncSession`, with the SQL as module-level `text(...)` constants;
-   the write methods commit.
-4. `src/<domain>/service.py` — a `<Name>Service` taking the repository;
-   business logic only.
-5. `src/<domain>/handlers/<endpoint>.py` — one module per endpoint; re-export
-   from `handlers/__init__.py`.
-6. `src/<domain>/router.py` — `APIRouter(prefix="/<names>", tags=[...])` wiring
-   each handler with `add_api_route`.
-7. `src/<domain>/dependencies.py` — the repository and service dependency
-   aliases.
-8. Register the router in `src/app.py` (pass `prefix=settings.api_v1_prefix` for
-   public domains; mount internal domains at the root).
-9. Write tests under `tests/<domain>/`, then run `mise run check`. The test
-   schema is built from the migrations automatically — there is no separate DDL
-   to keep in sync.
+## Hard invariants
 
-## Native SQL
+- **Decimal only.** Never use `float` for prices, spreads, or amounts. Parse
+  provider strings into `Decimal`; serialize prices and quantities as strings.
+- **UTC only.** All timestamps are timezone-aware UTC. Use the injected `Clock`
+  for expiry and staleness; do not call `datetime.now()` in domain code.
+- **Quotes are immutable.** Once issued they never change. They expire; they are
+  never updated. The quote store is in memory and single-process.
+- **Stale rates cannot be quoted.** Reject with an explicit `stale_rate` error.
+  Never silently use an old price.
+- **The event bus never blocks.** A slow WebSocket client may lose intermediate
+  ticks; it must always keep the latest tick per symbol.
+- **Ingestion is isolated from failures.** A provider disconnect, malformed
+  payload, or database error must not crash the app or stop other providers.
+- **Provider adapters own their protocol.** Business logic never parses Binance
+  or Frankfurter payloads. Normalizers are pure functions and unit-tested.
+- **Background writes own their session.** The candle aggregator opens its own
+  session and commits; request-scoped sessions are never reused in tasks.
+- **No ORM.** All SQL is hand-written and parameterized through
+  `sqlalchemy.text()`. No `DeclarativeBase`, `Mapped`, or autogenerate.
+- **Single-process state.** Rates, quotes, and provider status are not shared
+  across workers. Document the Redis upgrade path instead of assuming it works.
 
-**Rule: every SQL statement is written by hand and executed through
-`sqlalchemy.text()`.** Do not introduce the ORM (`DeclarativeBase`, `Mapped`,
-`select()`/`session.add()`), and do not use `--autogenerate`.
+## Domain conventions
 
-### Rules
+### Market models
 
-- **Always parameterize.** Use bind parameters (`:name`) for every value. Never
-  interpolate user input into a SQL string. The only thing built dynamically is
-  a set of **column names from a fixed whitelist** (see `ItemRepository.update`),
-  which is safe and marked with `# noqa: S608`.
-- **Keep SQL as module-level constants.** Define statements once at the top of
-  the repository module (`_GET_ITEM`, `_INSERT_ITEM`, …) and reuse them. Do not
-  build SQL inline inside request handlers.
-- **Return rows, map to schemas.** Use `result.mappings()` and
-  `Schema.model_validate(dict(row))`. Repositories return Pydantic schemas, not
-  dicts and not ORM objects.
-- **Use `RETURNING`.** `INSERT`/`UPDATE`/`DELETE … RETURNING` fetch the affected
-  row in one round-trip and let you detect "not found" without a second query.
-- **Timestamps come from the database.** Columns default to
-  `CURRENT_TIMESTAMP`; set `updated_at` on updates. Do not generate timestamps
-  in Python. Because a request runs in one transaction, prefer
-  `clock_timestamp()` where rows written in the same request must be ordered
-  (see `ItemRepository`).
-- **Native UUID keys.** Primary keys are PostgreSQL `uuid` columns defaulted
-  with `gen_random_uuid()`. Bind `uuid.UUID` values directly (asyncpg encodes
-  them); never stringify them. Let the database generate the id and read it
-  back with `RETURNING`.
-- **Transactions are owned by the session, not the repository.**
-  `get_session` (in `db/session.py`) is a unit of work: it commits once when the
-  request succeeds and rolls back if anything raises. Repository methods must
-  **not** call `commit()` (or `rollback()`); they just execute statements. This
-  keeps multi-step service operations atomic. See `docs/database.md`.
-- **Errors.** Raise `NotFoundError` / `ConflictError` / `AppError` (and friends:
-  `BadRequestError`, `UnauthorizedError`, `ForbiddenError`,
-  `TooManyRequestsError`, `ServiceUnavailableError`) from
-  `core/exceptions.py`. Do not return error dicts.
+`market/models.py` owns the shared `Tick`, `Rate`, `Candle`, and provider enums.
+Symbols use `BASE/QUOTE` (e.g. `EUR/USD`, `BTC/USDT`) and are normalized to
+uppercase. Validate symbols at API boundaries and at startup.
 
-### Example
+### Providers
 
-```python
-_GET_ITEM = text("SELECT id, name, description, created_at, updated_at FROM items WHERE id = :id")
+Every provider implements `RateProvider` from `providers/base.py`:
 
+- `run(sink: TickSink)` connects/polls until stopped and emits ticks through the
+  provided sink.
+- `status()` returns a `ProviderStatus`.
+- `stop()` requests shutdown and closes owned resources.
 
-async def get(self, item_id: uuid.UUID) -> ItemRead:
-    row = (await self.session.execute(_GET_ITEM, {"id": item_id})).mappings().one_or_none()
-    if row is None:
-        raise NotFoundError(f"Item {item_id} not found")
-    return ItemRead.model_validate(dict(row))
-```
+Shared resilience lives in `BaseProvider`: exponential backoff, a circuit
+breaker (`up` → `degraded` → `down`), reconnect counts, and provider metrics.
+Provider-specific payload parsing lives in `providers/normalizer.py`.
 
-## Conventions
+Add a provider by:
 
-- **Async everywhere.** All endpoint/service/repository/DB code is `async def`.
-  The DB session comes from `get_session` (an `AsyncSession`).
-- **Dependency injection.** Shared aliases live next to what they wrap:
-  `SessionDep` in `db/session.py`, `PaginationDep` in `core/pagination.py`, and
-  domain aliases in `<domain>/dependencies.py` (e.g. `ItemRepositoryDep`,
-  `ItemServiceDep`). Prefer adding a new alias over repeating `Depends(...)`.
-- **Type hints are mandatory.** mypy runs in strict mode. New public functions
-  need fully-annotated signatures; avoid `Any` and untyped decorators.
-- **Pagination.** Use `limit`/`offset` via `PaginationDep` and return `Page[T]`,
-  both from `core/pagination.py`.
-- **Style.** Line length 100, double quotes, Ruff is the source of truth.
-  Do not hand-format; run `mise run fix`.
-- **Imports.** `from __future__ import annotations` at the top of modules.
-  Absolute imports rooted at the top-level package (`core.`, `db.`, `items.`, …)
-  or the `app` module.
-- **No `print`.** Use `get_logger(__name__)` (structlog). Ruff bans `T20`.
-- **Cross-cutting HTTP concerns live in `core/`.** Auth, CORS, security headers,
-  rate limiting, and metrics are wired once in `app.py` / `core/middleware.py`.
-  Protect a public router with `dependencies=[Depends(require_api_key)]` rather
-  than hand-rolling checks in handlers.
-- **Document changes.** User-facing docs live in `docs/` (one page per topic,
-  indexed by `docs/README.md`). Add new settings to `.env.local.example` and the
-  table in `docs/configuration.md`.
-- **Comments.** Keep them short, lowercase, with no trailing period, and match
-  the surrounding style. Use `# --- Section ---` for section headers. Lint
-  directives (`# noqa`, `# type: ignore`) are always fine.
+1. Adding config fields and `.env.local.example` entries.
+2. Writing a normalizer with fixture-driven unit tests.
+3. Subclassing `BaseProvider`, implementing the protocol loop, and emitting
+   normalized ticks.
+4. Registering it in `providers/registry.py`.
+5. Adding status/config/API tests. Never call live providers in tests.
+
+### Rates and quotes
+
+- `RateStore` is the only source of the latest price. It computes `Rate.price`
+  as the midpoint and `Rate.stale` from `as_of` and the provider threshold.
+- `QuoteEngine` applies a **half-spread per side**:
+  `bid = mid * (1 - spread_bps / 20000)`,
+  `ask = mid * (1 + spread_bps / 20000)`.
+- Quantize with the configured symbol precision. Use `Decimal` rounding, never
+  binary floats.
+- `QuoteStore` retains expired quotes for a short grace period so `GET` can
+  return `valid: false`; then evicts them.
+
+### Candles
+
+- Only the `1m` interval is supported.
+- Bucket ticks by `as_of` floored to the minute. Ignore ticks older than the
+  current bucket.
+- `open`/`high`/`low`/`close` come from `Tick.last`; `volume` is `None` because
+  neither current provider supplies trade volume.
+- Flush closed candles periodically and on shutdown. Use an upsert so a restart
+  cannot duplicate a candle.
+- Database columns are `open_price`, `high_price`, `low_price`, `close_price`;
+  map them to the API's `open`, `high`, `low`, `close` fields.
+
+## API conventions
+
+- Public market data lives under `/v1` (the HLD contract). Internal probes stay
+  at the root.
+- `GET /health` is the aggregate health endpoint; keep `/health/live` and
+  `/health/ready` for orchestrators.
+- Error envelopes are produced by `core/exceptions.py`:
+  `{"error": {"code": "...", "message": "...", "details": {...}}}`.
+- Prices and quantities are JSON strings. Return ISO-8601 UTC timestamps.
+- Quote routes use the optional API-key guard; rates and WebSocket are public.
+- WebSocket messages are JSON. Subscribe/unsubscribe actions are documented in
+  `docs/websocket.md`.
+
+## Configuration
+
+- Add settings to `Settings` in `core/config.py` with a safe default.
+- Add every setting to `.env.local.example` and the table in
+  `docs/configuration.md`.
+- Read settings through `get_settings()`; never call `os.environ` directly.
+- `.env.local` is gitignored and must never be committed or exposed.
+- Per-provider staleness thresholds are mandatory; a single global threshold is
+  wrong because Binance is real-time and Frankfurter is daily.
+
+## Observability
+
+- Use `get_logger(__name__)` (structlog). Include `source`, `symbol`, and
+  `latency_ms` where relevant.
+- Provider metrics use the `fxstream_` prefix:
+  messages, errors, reconnects, state, last message timestamp.
+- WebSocket metrics: subscriber count and sent/coalesced messages.
+- Quote metrics: request outcomes and generation latency.
+- Never log secrets or raw `.env.local` values.
 
 ## Testing
 
-- Tests live in `tests/`, mirroring the domain layout (e.g.
-  `tests/items/test_items.py`, `tests/internal/test_health.py`, `tests/core/…`).
-- They run against a **real PostgreSQL database** — there is no SQLite path.
-  Start one with `mise run db:up` (Docker Compose) before running the suite.
-- The target is the `TEST_DATABASE_URL` env var (default
-  `postgresql+asyncpg://postgres:postgres@localhost:5432/app_test`).
-- The schema is built by applying the **Alembic migrations in a subprocess**
-  (see `tests/conftest.py`), so the suite exercises the migrations too. There is
-  no separate test schema to maintain.
-- Fixtures: `database_url` (session-scoped, migrated DB), `engine`, `session`
-  (truncates `items` for isolation), `client` (httpx ASGI client).
-- Repository contract tests live in `tests/items/conftest.py` as an
-  `item_repository` fixture parametrized over **both** the Postgres
-  `ItemRepository` and the in-memory double in `tests/helpers/repositories.py`.
-  Add new repository implementations (or fakes) to that parameter list rather
-  than duplicating the CRUD suite.
-- `pytest-asyncio` is in `auto` mode — just write `async def test_...`.
-- The DB dependency is overridden per test, so the app's own engine is unused.
-- Cover the happy path **and** error paths (404, 422, validation).
-- Warnings are errors (`filterwarnings = error`); don't introduce new warnings.
-- **Coverage must declare `concurrency = ["greenlet", "thread"]`** (already set
-  in `pyproject.toml`). SQLAlchemy's async engine runs through greenlet and
-  FastAPI uses a threadpool; without this, coverage silently drops every line
-  after a DB `await`. Do not remove it.
+- Tests live in `tests/`, mirroring the package layout.
+- Tests run against a **real PostgreSQL database** for DB code. Start it with
+  `mise run db:up`.
+- **No live network.** Use fake providers, `httpx.MockTransport`, and fake
+  WebSocket connections. Provider adapters must accept injected clients.
+- Use a fake clock for quote expiry and staleness. No `sleep`-based assertions.
+- Cover happy paths and error paths: stale rate, missing rate, invalid symbol,
+  expired quote, provider failure, malformed payload, WS backpressure.
+- `pytest-asyncio` is in `auto` mode — write plain `async def test_...`.
+- The schema is built from Alembic migrations in a subprocess; keep migrations
+  reversible and test the migration upgrade/downgrade path.
+- Warnings are errors (`filterwarnings = error`); do not introduce warnings.
+- Coverage is enforced at 90%. Do not lower `fail_under`. The coverage config
+  must keep `concurrency = ["greenlet", "thread"]`; do not remove it.
 
 ## Migrations
 
-- Alembic is configured with `target_metadata = None`; **autogenerate is
-  disabled**. `mise run revision "msg"` creates an empty file — fill `upgrade()`
-  / `downgrade()` with raw SQL via `op.execute("...")`.
-- The migration is the source of truth for the schema; keep it readable and
-  one logical change per file.
-- Filenames are prefixed with the creation timestamp (UTC) as
-  `year_month_day_HMS` via `file_template` in `alembic.ini`, e.g.
-  `2026_01_01_000000_create_items.py`, so they sort chronologically. The
-  internal revision id stays Alembic's default.
-- `migrations/env.py` resolves the URL from, in order: `alembic -x db_url=...`
-  (used by the test suite), a pre-set `sqlalchemy.url`, then app settings.
-- Inspect emitted SQL without a database: `uv run alembic upgrade head --sql`.
+- `target_metadata = None`; autogenerate is disabled.
+- `mise run revision "msg"` creates an empty migration. Fill `upgrade()` and
+  `downgrade()` with raw SQL via `op.execute(...)`.
+- The migration is the source of truth for the schema.
+- Filenames are timestamped `year_month_day_HMS` via `alembic.ini`.
 
-## Configuration & secrets
+## Agent tooling
 
-- Add new settings to `Settings` in `core/config.py` with a sane default, and
-  document them in `.env.local.example`.
-- Read settings via `get_settings()` (cached); never call `os.environ` directly.
-  The single exception is the production check in `core/config.py`, which must
-  run before any dotfile is read.
-- **Never commit real secrets.** `.env.local` is gitignored; only
-  `.env.local.example` ships. Production reads real env vars only — no dotfile.
+This repo ships project-specific OpenCode configuration:
+
+- `.opencode/opencode.json` — permissions, instructions, watcher, default agent.
+- `.opencode/commands/` — `/check`, `/new-domain`, `/new-provider`, `/review`,
+  `/smoke`.
+- `.opencode/agents/fxstream-reviewer.md` — read-only review subagent focused on
+  the invariants above.
+
+Use the reviewer before large merges. Keep commands and AGENTS.md in sync when
+the workflow changes.
 
 ## Do not
 
-- Do not add an ORM, ORM models, or `--autogenerate` migrations.
-- Do not interpolate values into SQL strings — bind them.
-- Do not edit `.venv/`, `uv.lock` by hand, or generated files in
-  `__pycache__`/caches. Regenerate with `uv lock`.
-- Do not bypass the service layer from a handler (and do not let a service
-  reach for the session — it goes through its repository).
+- Do not use `float` for prices, amounts, or spreads.
+- Do not call provider HTTP/WebSocket endpoints from tests.
+- Do not block the event bus or await slow client I/O inside `publish`.
+- Do not let a provider exception crash the application or other providers.
+- Do not bypass the service/engine layer from a handler.
+- Do not edit `.env.local`, `.venv/`, or `uv.lock` by hand.
 - Do not add dependencies without updating `uv.lock` (`uv add <pkg>`).
-- Do not weaken mypy/Ruff config to make code pass; fix the code.
-- Do not lower the coverage threshold (`fail_under` in `pyproject.toml`).
-- Do not commit from a repository — the session dependency owns the transaction.
-- Do not add narration comments (e.g. `# increment counter`) or restate what the
-  code already says — see [Comments](#conventions).
+- Do not weaken Ruff, mypy, coverage, or the warnings-as-errors policy.
+- Do not add narration comments that restate the code.
+- Do not commit real secrets or generated caches.
 
 ## Environment
 
-- Source root: `src/` — a flat namespace, so `import app`, `import core`, … work
-  from the repo root. Packaging is configured via `hatchling`.
 - Python ≥ 3.15. Tool versions pinned in `mise.toml`.
+- Source root: `src/`; packaging via `hatchling`.
 - Tests set `pythonpath = ["src"]`.
+- Tests disable live ingestion with `MARKET_DATA_ENABLED=false`.

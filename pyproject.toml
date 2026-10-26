@@ -1,7 +1,7 @@
 [project]
-name = "fastapi-service-template"
+name = "fxstream-api"
 dynamic = ["version"]
-description = "Production-ready FastAPI microservice template"
+description = "Real-time FX and crypto rates, candles, and quotes"
 readme = "README.md"
 requires-python = ">=3.15"
 license = "MIT"
@@ -16,6 +16,8 @@ dependencies = [
     "alembic>=1.14.0",
     "structlog>=24.4.0",
     "prometheus-client>=0.26.0",
+    "httpx>=0.28.1",
+    "websockets>=17.2",
 ]
 
 [dependency-groups]
@@ -28,6 +30,7 @@ dev = [
     "httpx>=0.28.1",
     "pre-commit>=4.0.1",
     "pip-audit>=2.10.1",
+    "httpx2>=2.16.0",
 ]
 
 [build-system]
@@ -77,7 +80,19 @@ ignore = [
 "migrations/**" = ["E501", "I001"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["app", "core", "db", "internal", "items"]
+known-first-party = [
+    "app",
+    "core",
+    "db",
+    "internal",
+    "market",
+    "providers",
+    "rates",
+    "quotes",
+    "candles",
+    "streaming",
+    "ingestion",
+]
 combine-as-imports = true
 
 [tool.ruff.format]
@@ -115,7 +130,13 @@ addopts = [
     "--cov=core",
     "--cov=db",
     "--cov=internal",
-    "--cov=items",
+    "--cov=market",
+    "--cov=providers",
+    "--cov=rates",
+    "--cov=quotes",
+    "--cov=candles",
+    "--cov=streaming",
+    "--cov=ingestion",
     "--cov-report=term-missing",
     "--cov-report=xml",
 ]
@@ -126,7 +147,19 @@ filterwarnings = ["error"]
 # ---------------------------------------------------------------------------
 [tool.coverage.run]
 branch = true
-source = ["app", "core", "db", "internal", "items"]
+source = [
+    "app",
+    "core",
+    "db",
+    "internal",
+    "market",
+    "providers",
+    "rates",
+    "quotes",
+    "candles",
+    "streaming",
+    "ingestion",
+]
 # SQLAlchemy's async engine runs through greenlet, and FastAPI runs sync
 # dependencies/endpoints in a threadpool. Coverage needs both declared or it
 # silently drops the lines after an `await` on the DB. See coveragepy#1082.

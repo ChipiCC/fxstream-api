@@ -19,7 +19,7 @@ repos:
       - id: ruff-format
 
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.14.1
+    rev: v2.4.0
     hooks:
       - id: mypy
         additional_dependencies:
@@ -30,6 +30,8 @@ repos:
           - structlog>=24.4
           - prometheus-client>=0.26
           - httpx>=0.28
+          - httpx2>=2.16
+          - websockets>=17.2
           - pytest>=8.3
         args: [--config-file=pyproject.toml]
         files: ^(src|tests)/

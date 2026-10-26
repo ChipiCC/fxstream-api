@@ -2,7 +2,7 @@
 description: Run the full definition of done (lint + mypy + tests)
 ---
 
-Run the full check for this repository:
+Run the full check for FXStream API:
 
 ```
 mise run check

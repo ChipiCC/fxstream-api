@@ -1,6 +1,9 @@
 .git
 .github
+.opencode
 .venv
+docs
+tests
 __pycache__
 *.py[cod]
 .pytest_cache
@@ -16,5 +19,4 @@ build
 *.egg-info
 .idea
 .vscode
-README.md
 AGENTS.md
