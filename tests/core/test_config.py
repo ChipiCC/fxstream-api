@@ -116,3 +116,48 @@ def test_list_settings_accept_csv() -> None:
 def test_list_settings_accept_json() -> None:
     settings = Settings(allowed_hosts='["a.example", "b.example"]')
     assert settings.allowed_hosts == ["a.example", "b.example"]
+
+
+def test_market_defaults() -> None:
+    settings = Settings()
+    assert settings.api_v1_prefix == "/v1"
+    assert settings.app_name == "FXStream API"
+    assert settings.symbols == ["BTC/USDT", "EUR/USD"]
+    assert settings.stale_seconds_for("binance") == 10
+    assert settings.stale_seconds_for("unknown") == 60
+
+
+def test_symbols_are_normalized_and_configurable() -> None:
+    settings = Settings(
+        binance_symbols="btc/usdt, eth/usdt",
+        frankfurter_symbols="eur/usd",
+    )
+    assert settings.binance_symbols == ["BTC/USDT", "ETH/USDT"]
+    assert settings.symbols == ["BTC/USDT", "ETH/USDT", "EUR/USD"]
+
+
+def test_symbol_cannot_belong_to_two_providers() -> None:
+    with pytest.raises(ValidationError):
+        Settings(binance_symbols="BTC/USDT", frankfurter_symbols="BTC/USDT")
+
+
+def test_invalid_symbol_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        Settings(binance_symbols="BTCUSDT")
+
+
+def test_partial_stale_override_keeps_other_defaults() -> None:
+    settings = Settings(provider_stale_seconds={"binance": 5})
+    assert settings.stale_seconds_for("binance") == 5
+    assert settings.stale_seconds_for("frankfurter") == 129600
+
+
+def test_per_symbol_spread_and_precision() -> None:
+    settings = Settings(
+        spreads_bps={"btc/usdt": 15},
+        price_decimals_by_symbol={"EUR/USD": 5},
+    )
+    assert settings.spread_bps_for("BTC/USDT") == 15
+    assert settings.spread_bps_for("EUR/USD") == 10
+    assert settings.price_decimals_for("EUR/USD") == 5
+    assert settings.price_decimals_for("BTC/USDT") == 8

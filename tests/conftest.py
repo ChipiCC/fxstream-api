@@ -16,8 +16,11 @@ Start a database first::
 from __future__ import annotations
 
 import os
+
+os.environ.setdefault("MARKET_DATA_ENABLED", "false")
+
 import subprocess
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 
 import pytest
@@ -33,8 +36,9 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool
 
 from app import app
-from core.config import Settings
+from core.config import Settings, get_settings
 from db.session import get_session
+from market.runtime import MarketRuntime, build_market_runtime
 
 _ROOT = Path(__file__).resolve().parent.parent
 
@@ -51,6 +55,19 @@ def _isolate_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     """Decouple the suite from a developer's local `.env.local`."""
     monkeypatch.delenv("ENVIRONMENT", raising=False)
     monkeypatch.setitem(Settings.model_config, "env_file", ".env.local.pytest-absent")
+
+
+@pytest.fixture(autouse=True)
+def _fresh_market() -> Iterator[None]:
+    """Give each test a clean in-memory runtime with no live providers."""
+    app.state.market = build_market_runtime(settings=get_settings(), providers=[])
+    yield
+
+
+@pytest.fixture
+def market() -> MarketRuntime:
+    runtime: MarketRuntime = app.state.market
+    return runtime
 
 
 def _alembic(*args: str) -> None:
