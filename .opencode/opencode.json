@@ -1,0 +1,22 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  // ruff is a built-in formatter; it picks up pyproject.toml automatically
+  "formatter": true,
+  "watcher": {
+    "ignore": [
+      ".venv/**",
+      ".pytest_cache/**",
+      ".mypy_cache/**",
+      ".ruff_cache/**",
+      "htmlcov/**",
+      "coverage.xml"
+    ]
+  },
+  "permissions": [
+    // destructive / irreversible commands must be confirmed
+    { "action": "shell", "resource": "git push *", "effect": "ask" },
+    { "action": "shell", "resource": "mise run db:reset", "effect": "ask" },
+    { "action": "shell", "resource": "docker compose down -v*", "effect": "ask" },
+    { "action": "shell", "resource": "alembic downgrade *", "effect": "ask" }
+  ]
+}

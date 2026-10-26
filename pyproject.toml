@@ -1,0 +1,142 @@
+[project]
+name = "fastapi-service-template"
+dynamic = ["version"]
+description = "Production-ready FastAPI microservice template"
+readme = "README.md"
+requires-python = ">=3.15"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Guillermo Rodriguez Moreno" }]
+dependencies = [
+    "fastapi[standard]>=0.115.6",
+    "pydantic>=2.10.4",
+    "pydantic-settings>=2.7.0",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30.0",
+    "alembic>=1.14.0",
+    "structlog>=24.4.0",
+    "prometheus-client>=0.26.0",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.8.6",
+    "mypy>=1.14.1",
+    "pytest>=8.3.4",
+    "pytest-asyncio>=0.25.2",
+    "pytest-cov>=6.0.0",
+    "httpx>=0.28.1",
+    "pre-commit>=4.0.1",
+    "pip-audit>=2.10.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+only-include = ["src"]
+sources = ["src"]
+
+[tool.hatch.version]
+path = "src/core/version.py"
+
+[tool.uv]
+package = true
+
+# ---------------------------------------------------------------------------
+# Ruff
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py315"
+src = ["src", "tests"]
+extend-exclude = ["migrations/versions"]
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # pyflakes
+    "I",     # isort
+    "B",     # flake8-bugbear
+    "C4",    # flake8-comprehensions
+    "UP",    # pyupgrade
+    "SIM",   # flake8-simplify
+    "ASYNC", # flake8-async
+    "S",     # flake8-bandit
+    "T20",   # flake8-print
+    "RUF",   # ruff-specific
+]
+ignore = [
+    "B008", # function calls in argument defaults (FastAPI Depends pattern)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106", "S603", "S607"] # asserts, dummy creds, fixed subprocess calls
+"migrations/**" = ["E501", "I001"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app", "core", "db", "internal", "items"]
+combine-as-imports = true
+
+[tool.ruff.format]
+quote-style = "double"
+
+# ---------------------------------------------------------------------------
+# mypy
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.15"
+strict = true
+warn_unreachable = true
+pretty = true
+plugins = ["pydantic.mypy"]
+mypy_path = "src"
+exclude = ["^migrations/"]
+
+[[tool.mypy.overrides]]
+module = ["alembic.*"]
+ignore_missing_imports = true
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+    "--cov=app",
+    "--cov=core",
+    "--cov=db",
+    "--cov=internal",
+    "--cov=items",
+    "--cov-report=term-missing",
+    "--cov-report=xml",
+]
+filterwarnings = ["error"]
+
+# ---------------------------------------------------------------------------
+# coverage
+# ---------------------------------------------------------------------------
+[tool.coverage.run]
+branch = true
+source = ["app", "core", "db", "internal", "items"]
+# SQLAlchemy's async engine runs through greenlet, and FastAPI runs sync
+# dependencies/endpoints in a threadpool. Coverage needs both declared or it
+# silently drops the lines after an `await` on the DB. See coveragepy#1082.
+concurrency = ["greenlet", "thread"]
+
+[tool.coverage.report]
+fail_under = 90
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+]
