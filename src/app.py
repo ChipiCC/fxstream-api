@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from candles.router import router as candles_router
 from core.config import get_settings
 from core.exceptions import register_exception_handlers
 from core.logging import configure_logging, get_logger
@@ -26,25 +27,34 @@ from core.middleware import (
 from core.version import __version__
 from db.session import dispose_engine
 from internal.router import router as internal_router
-from items.router import router as items_router
+from market.runtime import MarketRuntime, build_market_runtime
+from providers.router import router as providers_router
+from quotes.router import router as quotes_router
+from rates.router import router as rates_router
+from streaming.router import router as streaming_router
 
 settings = get_settings()
 logger = get_logger(__name__)
 
 
 @asynccontextmanager
-async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Manage application startup and shutdown."""
     configure_logging(log_level=settings.log_level, json_logs=settings.log_json)
+    market: MarketRuntime = app.state.market
     logger.info(
         "app_startup",
         app=settings.app_name,
         version=__version__,
         environment=settings.environment,
+        market_data_enabled=market.settings.market_data_enabled,
     )
+    if market.settings.market_data_enabled:
+        await market.manager.start()
     try:
         yield
     finally:
+        await market.manager.stop()
         await dispose_engine()
         logger.info("app_shutdown", app=settings.app_name)
 
@@ -61,7 +71,12 @@ def _register_middleware(app: FastAPI) -> None:
             RateLimitMiddleware,
             max_requests=settings.rate_limit_requests,
             window_seconds=settings.rate_limit_window_seconds,
-            exempt_paths=["/health/live", "/health/ready", settings.metrics_path],
+            exempt_paths=[
+                "/health",
+                "/health/live",
+                "/health/ready",
+                settings.metrics_path,
+            ],
         )
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
     if settings.security_headers_enabled:
@@ -83,20 +98,25 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title=settings.app_name,
         version=__version__,
-        description="Production-ready FastAPI microservice template.",
+        description="Real-time FX and crypto rates, candles, and quotes.",
         debug=settings.debug,
         docs_url="/docs" if settings.docs_enabled else None,
         redoc_url="/redoc" if settings.docs_enabled else None,
         openapi_url="/openapi.json" if settings.docs_enabled else None,
         lifespan=lifespan,
     )
+    app.state.market = build_market_runtime(settings=settings)
 
     _register_middleware(app)
     register_exception_handlers(app)
 
     # internal routes (metadata, probes) live at the root, outside versioning
     app.include_router(internal_router)
-    app.include_router(items_router, prefix=settings.api_v1_prefix)
+    app.include_router(rates_router, prefix=settings.api_v1_prefix)
+    app.include_router(candles_router, prefix=settings.api_v1_prefix)
+    app.include_router(quotes_router, prefix=settings.api_v1_prefix)
+    app.include_router(providers_router, prefix=settings.api_v1_prefix)
+    app.include_router(streaming_router, prefix=settings.api_v1_prefix)
 
     if settings.metrics_enabled:
         app.add_api_route(

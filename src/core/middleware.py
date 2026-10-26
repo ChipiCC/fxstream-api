@@ -21,7 +21,7 @@ from core.logging import get_logger
 logger = get_logger(__name__)
 
 # Paths that must never be rate limited (probes and metrics scrapers).
-_RATE_LIMIT_EXEMPT: frozenset[str] = frozenset({"/health/live", "/health/ready"})
+_RATE_LIMIT_EXEMPT: frozenset[str] = frozenset({"/health", "/health/live", "/health/ready"})
 
 
 class RequestContextMiddleware:

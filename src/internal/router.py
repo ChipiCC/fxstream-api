@@ -21,6 +21,13 @@ router.add_api_route(
     summary="Service root",
 )
 router.add_api_route(
+    "/health",
+    handlers.readiness,
+    methods=["GET"],
+    response_model=Readiness,
+    summary="Service health",
+)
+router.add_api_route(
     "/health/live",
     handlers.liveness,
     methods=["GET"],
